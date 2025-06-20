@@ -1,55 +1,106 @@
 require('dotenv').config();
+
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
 console.log("✅ NeuroFox загружается...");
 
+// Создаем бот с polling
 const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
-// === Обработка обычных сообщений
-bot.on('message', async (msg) => {
-  const chatId = msg.chat.id;
-  const userMessage = msg.text;
+// Простая клавиатура с кнопками
+const keyboard = {
+  reply_markup: {
+    keyboard: [
+      [{ text: "Clear чат" }],
+      [{ text: "Помощь" }],
+      [{ text: "О боте" }],
+    ],
+    resize_keyboard: true,
+    one_time_keyboard: false,
+  }
+};
 
-  // Пропускаем команды вроде /start и /donate
-  if (!userMessage || userMessage.startsWith('/')) return;
+// Хранилище истории сообщений для каждого пользователя
+const chatHistory = {};
 
-  bot.sendChatAction(chatId, 'typing');
-
+// Функция получения ответа от OpenRouter API (ChatGPT)
+async function getAIResponse(messages) {
   try {
     const response = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
-      model: "openrouter/openai/gpt-3.5-turbo",
-      messages: [{ role: "user", content: userMessage }]
+      model: "openrouter/openai/gpt-4o-mini",
+      messages,
+      max_tokens: 1000,
+      temperature: 0.7
     }, {
       headers: {
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        'Content-Type': 'application/json',
-        'HTTP-Referer': 'https://t.me/neurofox_assistant_bot',
-        'X-Title': 'NeuroFox AI Assistant'
+        'Content-Type': 'application/json'
       }
     });
 
-    const reply = response.data.choices?.[0]?.message?.content || "❌ ИИ не дал ответа.";
-    bot.sendMessage(chatId, reply);
+    return response.data.choices[0].message.content;
   } catch (error) {
-    console.error("❌ Ошибка:", error?.response?.data || error.message);
-    bot.sendMessage(chatId, '⚠️ Произошла ошибка. Попробуй позже.');
+    console.error('Ошибка запроса к ИИ:', error.response?.data || error.message);
+    return "❌ Ошибка при обработке запроса к ИИ.";
   }
-});
+}
 
-// === /donate — Показать кнопку Kaspi
-bot.onText(/\/donate/, (msg) => {
+// Обработка входящих сообщений
+bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  const text = msg.text;
 
-  bot.sendMessage(chatId, "🙏 Спасибо за поддержку! Перевод через Kaspi:", {
-    reply_markup: {
-      inline_keyboard: [
-        [
-          { text: "💳 Перевести на Kaspi", url: "https://kaspi.kz/transfer/Mako-top" }
-        ]
-      ]
-    }
-  });
+  if (!text) return;
+
+  // Команды
+  if (text === "/start") {
+    await bot.sendMessage(chatId, "Привет! Я NeuroFox — твой ИИ ассистент.\nНапиши что-нибудь, и я отвечу!", keyboard);
+    chatHistory[userId] = [];
+    return;
+  }
+
+  if (text === "Clear чат") {
+    chatHistory[userId] = [];
+    await bot.sendMessage(chatId, "🧹 История чата очищена.", keyboard);
+    return;
+  }
+
+  if (text === "Помощь") {
+    await bot.sendMessage(chatId,
+      "🛠️ Вот что я умею:\n" +
+      "- Отвечать на любые вопросы\n" +
+      "- Очистка истории чата\n" +
+      "- Поддержка кнопок\n" +
+      "- Автоопределение языка\n\n" +
+      "Просто напиши мне что-нибудь.",
+      keyboard);
+    return;
+  }
+
+  if (text === "О боте") {
+    await bot.sendMessage(chatId,
+      "NeuroFox — ИИ-бот на базе OpenRouter API и Telegram.\n" +
+      "Создан с любовью для помощи тебе.",
+      keyboard);
+    return;
+  }
+
+  // Добавляем сообщение пользователя в историю
+  if (!chatHistory[userId]) chatHistory[userId] = [];
+  chatHistory[userId].push({ role: "user", content: text });
+
+  await bot.sendChatAction(chatId, 'typing');
+
+  // Получаем ответ от ИИ
+  const aiResponse = await getAIResponse(chatHistory[userId]);
+
+  // Добавляем ответ ИИ в историю
+  chatHistory[userId].push({ role: "assistant", content: aiResponse });
+
+  // Отправляем ответ пользователю
+  await bot.sendMessage(chatId, aiResponse, { parse_mode: 'Markdown', reply_markup: keyboard });
 });
 
-console.log("✅ NeuroFox с Kaspi-донатом запущен!");
+console.log("✅ NeuroFox запущен. Жду сообщений...");
